@@ -1,13 +1,9 @@
 export default async function handler(req, res) {
   if (req.method === 'GET') {
-   const mode      = req.query['hub.mode'];
-const token     = req.query['hub.verify_token'];
-const challenge = req.query['hub.challenge'];
-    const VERIFY_TOKEN = process.env.INSTAGRAM_VERIFY_TOKEN;
-    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-      return res.status(200).send(challenge);
-    }
-    return res.status(403).send('Forbidden');
+    // DEBUG: сразу возвращаем любой hub.challenge без проверок
+    const challenge = req.query['hub.challenge'] || '';
+    console.log('VERIFICATION GET:', req.url, '→', challenge);
+    return res.status(200).send(challenge);
   }
 
   if (req.method === 'POST') {
