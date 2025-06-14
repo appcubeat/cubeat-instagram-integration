@@ -1,77 +1,79 @@
+// api/webhooks/instagram.js
+
 export default async function handler(req, res) {
-  // 1) GET — Webhook verification
+  // 1) GET → Facebook/Instagram webhook verification
   if (req.method === 'GET') {
     const challenge = req.query['hub.challenge'] || '';
     console.log('VERIFICATION GET:', req.url, '→', challenge);
     return res.status(200).send(challenge);
   }
 
-  // 2) POST — Incoming Instagram webhook events
+  // 2) POST → receiving real webhook events
   if (req.method === 'POST') {
-    const payload = req.body;
-    console.log('INCOMING WEBHOOK:', JSON.stringify(payload));
+    try {
+      console.log('INCOMING WEBHOOK:', JSON.stringify(req.body));
 
-    // Extract all changes from payload.entry[]
-    const changes = (payload.entry || []).flatMap(e => e.changes || []);
+      // извлекаем данные из payload
+      const entry     = Array.isArray(req.body.entry)     ? req.body.entry[0]     : null;
+      const change    = entry && Array.isArray(entry.changes) ? entry.changes[0]   : null;
+      const value     = change ? change.value                : null;
 
-    for (const ch of changes) {
-      if (ch.field !== 'messages') continue;
-
-      // Unwrap nested value.value if present
-      let msg = ch.value;
-      if (msg?.value) msg = msg.value;
-
-      const sid  = msg?.sender?.id;
-      const rid  = msg?.recipient?.id;
-      const mid  = msg?.message?.mid;
-      const text = msg?.message?.text || '';
-
-      if (!sid || !rid || !mid) {
-        console.warn('Skipping invalid payload:', JSON.stringify(msg));
-        continue;
+      // если нет нужных полей — выходим
+      if (!value || !value.sender || !value.recipient || !value.message) {
+        console.warn('Webhook payload missing required fields');
+        return res.status(400).send('Bad Request');
       }
 
-      // Convert Unix seconds → milliseconds → ISO-8601 string
-      const tsSec        = parseInt(msg.timestamp, 10) || Math.floor(Date.now() / 1000);
-      const isoTimestamp = new Date(tsSec * 1000).toISOString();
+      // подготавливаем поля для Base44
+      const instagramUserId    = String(value.sender.id);
+      const clientId           = String(value.recipient.id);
+      const instagramMessageId = String(value.message.mid);
+      const messageText        = String(value.message.text || '');
+      // timestamp приходит в секундах или как строка
+      const tsNum              = Number(value.timestamp);
+      const timestampISO       = isNaN(tsNum)
+        ? new Date().toISOString()
+        : new Date(tsNum * 1000).toISOString();
 
-      const record = {
-        client_id:            String(rid),
-        instagram_user_id:    String(sid),
-        instagram_message_id: String(mid),
-        direction:            'incoming',
-        message_text:         text,
-        timestamp:            isoTimestamp
+      // формируем тело запроса в Base44
+      const payload = {
+        client_id:           clientId,
+        instagram_user_id:   instagramUserId,
+        instagram_message_id,
+        direction:           'incoming',
+        message_text:        messageText,
+        timestamp:           timestampISO,
       };
 
-      try {
-        const resp = await fetch(
-          `${process.env.BASE44_API_URL}/entities/ChatMessage`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'api_key':        process.env.BASE44_API_TOKEN
-            },
-            body: JSON.stringify(record)
-          }
-        );
+      // шлём в Base44
+      const base44Url   = process.env.BASE44_API_URL;   // например "https://app.base44.com/api/apps/{APP_ID}/entities/ChatMessage"
+      const base44Token = process.env.BASE44_API_TOKEN;
 
-        if (!resp.ok) {
-          const errText = await resp.text();
-          console.error('❌ Base44 returned error:', resp.status, errText);
-        } else {
-          console.log('✅ Saved ChatMessage to Base44:', record);
-        }
-      } catch (err) {
-        console.error('❌ Error saving to Base44:', err);
+      const resp = await fetch(base44Url, {
+        method:  'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'api_key':       base44Token,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!resp.ok) {
+        const errText = await resp.text();
+        console.error('❌ Base44 returned error:', resp.status, errText);
+      } else {
+        const saved = await resp.json();
+        console.log('✅ Saved ChatMessage to Base44:', saved);
       }
-    }
 
-    return res.status(200).send('EVENT_RECEIVED');
+      // подтверждаем приём
+      return res.status(200).send('EVENT_RECEIVED');
+    } catch (e) {
+      console.error('❌ Error in handler:', e);
+      return res.status(500).send('Internal Server Error');
+    }
   }
 
-  // 3) All other methods
-  res.setHeader('Allow', ['GET','POST']);
+  // остальные методы не поддерживаем
   return res.status(405).send('Method Not Allowed');
 }
