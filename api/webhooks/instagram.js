@@ -1,77 +1,81 @@
 // api/webhooks/instagram.js
 
 export default async function handler(req, res) {
-  // 1) Верификация (GET-запрос от Facebook/Instagram)
+  // 1) GET — проверка от Facebook/Instagram
   if (req.method === 'GET') {
-    const challenge = req.query['hub.challenge'] || '';
-    console.log('VERIFICATION GET:', req.url, '→', challenge);
-    return res.status(200).send(challenge);
+    const challenge = req.query['hub.challenge'] || ''
+    console.log('VERIFICATION GET:', req.url, '→', challenge)
+    return res.status(200).send(challenge)
   }
 
-  // 2) Получение реальных событий (POST)
+  // 2) POST — реальные обновления
   if (req.method === 'POST') {
     try {
-      console.log('INCOMING WEBHOOK:', JSON.stringify(req.body));
+      const body = req.body
+      console.log('INCOMING WEBHOOK:', JSON.stringify(body))
 
-      const entry  = Array.isArray(req.body.entry) && req.body.entry[0];
-      const change = entry && Array.isArray(entry.changes) && entry.changes[0];
-      const value  = change && change.value;
-
-      if (!value?.sender?.id || !value?.recipient?.id || !value?.message?.mid) {
-        console.warn('Webhook payload missing required fields');
-        return res.status(400).send('Bad Request');
+      // вытаскиваем из payload
+      const change = body.entry?.[0]?.changes?.[0]?.value
+      if (!change) {
+        console.warn('No change.value found')
+        return res.status(400).send('Bad Request')
       }
 
-      // Извлекаем нужные значения
-      const instagram_user_id    = String(value.sender.id);
-      const client_id            = String(value.recipient.id);
-      const instagram_message_id = String(value.message.mid);
-      const message_text         = String(value.message.text || '');
+      const senderId    = change.sender?.id
+      const recipientId = change.recipient?.id
+      const mid         = change.message?.mid
+      const text        = change.message?.text
+      const tsSeconds   = Number(change.timestamp) || 0
 
-      // Парсим timestamp (секунды → ms)
-      const tsNum = Number(value.timestamp);
-      const timestamp = isNaN(tsNum)
-        ? new Date().toISOString()
-        : new Date(tsNum * 1000).toISOString();
+      // проверяем обязательные поля
+      if (!senderId || !recipientId || !mid) {
+        console.warn('Missing fields in webhook:', { senderId, recipientId, mid })
+        return res.status(400).send('Bad Request')
+      }
 
-      // Формируем payload для Base44
+      // приводим timestamp к ISO
+      const timestampIso = new Date(tsSeconds * 1000).toISOString()
+
+      // формируем тело для Base44
       const payload = {
-        client_id,
-        instagram_user_id,
-        instagram_message_id,
-        direction:    'incoming',
-        message_text,
-        timestamp,
-      };
+        client_id:            recipientId,
+        instagram_user_id:    senderId,
+        instagram_message_id: mid,
+        direction:            'incoming',
+        message_text:         text || '',
+        timestamp:            timestampIso
+      }
 
-      // Шлём в Base44
-      const BASE44_API_URL   = process.env.BASE44_API_URL;   // e.g. https://app.base44.com/api/apps/XXX/entities/ChatMessage
-      const BASE44_API_TOKEN = process.env.BASE44_API_TOKEN;
-
-      const resp = await fetch(BASE44_API_URL, {
-        method:  'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'api_key':       BASE44_API_TOKEN,
-        },
-        body: JSON.stringify(payload),
-      });
+      // шлём в Base44
+      const resp = await fetch(
+        `${process.env.BASE44_API_URL}/entities/ChatMessage`,
+        {
+          method:  'POST',
+          headers: {
+            'Content-Type':  'application/json',
+            'api_key':       process.env.BASE44_API_TOKEN
+          },
+          body: JSON.stringify(payload)
+        }
+      )
 
       if (!resp.ok) {
-        const text = await resp.text();
-        console.error('❌ Base44 returned error:', resp.status, text);
+        const errText = await resp.text()
+        console.error('Base44 returned error:', resp.status, errText)
       } else {
-        const saved = await resp.json();
-        console.log('✅ Saved ChatMessage to Base44:', saved);
+        const saved = await resp.json()
+        console.log('✅ Saved ChatMessage to Base44:', saved)
       }
 
-      return res.status(200).send('EVENT_RECEIVED');
-    } catch (err) {
-      console.error('❌ Error in handler:', err);
-      return res.status(500).send('Internal Server Error');
+      // Facebook требует 200 OK
+      return res.status(200).send('EVENT_RECEIVED')
+
+    } catch (e) {
+      console.error('❌ Error in handler:', e)
+      return res.status(500).send('Server Error')
     }
   }
 
-  // 3) Остальные методы запрещены
-  return res.status(405).send('Method Not Allowed');
+  // 3) другие методы — запрещены
+  return res.status(405).send('Method Not Allowed')
 }
