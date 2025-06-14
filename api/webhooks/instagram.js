@@ -1,79 +1,77 @@
 // api/webhooks/instagram.js
 
 export default async function handler(req, res) {
-  // 1) GET → Facebook/Instagram webhook verification
+  // 1) Верификация (GET-запрос от Facebook/Instagram)
   if (req.method === 'GET') {
     const challenge = req.query['hub.challenge'] || '';
     console.log('VERIFICATION GET:', req.url, '→', challenge);
     return res.status(200).send(challenge);
   }
 
-  // 2) POST → receiving real webhook events
+  // 2) Получение реальных событий (POST)
   if (req.method === 'POST') {
     try {
       console.log('INCOMING WEBHOOK:', JSON.stringify(req.body));
 
-      // извлекаем данные из payload
-      const entry     = Array.isArray(req.body.entry)     ? req.body.entry[0]     : null;
-      const change    = entry && Array.isArray(entry.changes) ? entry.changes[0]   : null;
-      const value     = change ? change.value                : null;
+      const entry  = Array.isArray(req.body.entry) && req.body.entry[0];
+      const change = entry && Array.isArray(entry.changes) && entry.changes[0];
+      const value  = change && change.value;
 
-      // если нет нужных полей — выходим
-      if (!value || !value.sender || !value.recipient || !value.message) {
+      if (!value?.sender?.id || !value?.recipient?.id || !value?.message?.mid) {
         console.warn('Webhook payload missing required fields');
         return res.status(400).send('Bad Request');
       }
 
-      // подготавливаем поля для Base44
-      const instagramUserId    = String(value.sender.id);
-      const clientId           = String(value.recipient.id);
-      const instagramMessageId = String(value.message.mid);
-      const messageText        = String(value.message.text || '');
-      // timestamp приходит в секундах или как строка
-      const tsNum              = Number(value.timestamp);
-      const timestampISO       = isNaN(tsNum)
+      // Извлекаем нужные значения
+      const instagram_user_id    = String(value.sender.id);
+      const client_id            = String(value.recipient.id);
+      const instagram_message_id = String(value.message.mid);
+      const message_text         = String(value.message.text || '');
+
+      // Парсим timestamp (секунды → ms)
+      const tsNum = Number(value.timestamp);
+      const timestamp = isNaN(tsNum)
         ? new Date().toISOString()
         : new Date(tsNum * 1000).toISOString();
 
-      // формируем тело запроса в Base44
+      // Формируем payload для Base44
       const payload = {
-        client_id:           clientId,
-        instagram_user_id:   instagramUserId,
+        client_id,
+        instagram_user_id,
         instagram_message_id,
-        direction:           'incoming',
-        message_text:        messageText,
-        timestamp:           timestampISO,
+        direction:    'incoming',
+        message_text,
+        timestamp,
       };
 
-      // шлём в Base44
-      const base44Url   = process.env.BASE44_API_URL;   // например "https://app.base44.com/api/apps/{APP_ID}/entities/ChatMessage"
-      const base44Token = process.env.BASE44_API_TOKEN;
+      // Шлём в Base44
+      const BASE44_API_URL   = process.env.BASE44_API_URL;   // e.g. https://app.base44.com/api/apps/XXX/entities/ChatMessage
+      const BASE44_API_TOKEN = process.env.BASE44_API_TOKEN;
 
-      const resp = await fetch(base44Url, {
+      const resp = await fetch(BASE44_API_URL, {
         method:  'POST',
         headers: {
           'Content-Type': 'application/json',
-          'api_key':       base44Token,
+          'api_key':       BASE44_API_TOKEN,
         },
         body: JSON.stringify(payload),
       });
 
       if (!resp.ok) {
-        const errText = await resp.text();
-        console.error('❌ Base44 returned error:', resp.status, errText);
+        const text = await resp.text();
+        console.error('❌ Base44 returned error:', resp.status, text);
       } else {
         const saved = await resp.json();
         console.log('✅ Saved ChatMessage to Base44:', saved);
       }
 
-      // подтверждаем приём
       return res.status(200).send('EVENT_RECEIVED');
-    } catch (e) {
-      console.error('❌ Error in handler:', e);
+    } catch (err) {
+      console.error('❌ Error in handler:', err);
       return res.status(500).send('Internal Server Error');
     }
   }
 
-  // остальные методы не поддерживаем
+  // 3) Остальные методы запрещены
   return res.status(405).send('Method Not Allowed');
 }
