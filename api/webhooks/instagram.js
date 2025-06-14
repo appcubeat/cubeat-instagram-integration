@@ -11,30 +11,35 @@ export default async function handler(req, res) {
     const payload = req.body;
     console.log('INCOMING WEBHOOK:', JSON.stringify(payload));
 
-    // Попытаемся получить массив изменений
     const changes = Array.isArray(payload.entry)
-      ? payload.entry.flatMap((e) => Array.isArray(e.changes) ? e.changes : [])
+      ? payload.entry.flatMap(e => Array.isArray(e.changes) ? e.changes : [])
       : [];
 
     for (const ch of changes) {
-      // нас интересуют только field === 'messages'
       if (ch.field !== 'messages') continue;
 
-      const msg = ch.value;
-      // гарантируем, что у нас есть sender и recipient
-      if (!msg?.sender?.id || !msg?.recipient?.id || !msg?.message?.mid) {
+      // учитываем вложенный value.value
+      let msg = ch.value;
+      if (msg && typeof msg === 'object' && msg.value && typeof msg.value === 'object') {
+        msg = msg.value;
+      }
+
+      // валидируем наличие необходимых полей
+      const sid = msg?.sender?.id;
+      const rid = msg?.recipient?.id;
+      const mid = msg?.message?.mid;
+      if (!sid || !rid || !mid) {
         console.warn('❗️ Skipping invalid message payload:', JSON.stringify(msg));
         continue;
       }
 
-      // готовим данные для сохранения
       const record = {
-        client_id:           msg.recipient.id,
-        instagram_user_id:   msg.sender.id,
-        instagram_message_id: msg.message.mid,
-        direction:           'incoming',
-        message_text:        msg.message.text || '',
-        timestamp:           parseInt(msg.timestamp, 10) || Date.now()
+        client_id:            rid,
+        instagram_user_id:    sid,
+        instagram_message_id: mid,
+        direction:            'incoming',
+        message_text:         msg.message.text || '',
+        timestamp:            parseInt(msg.timestamp, 10) || Date.now()
       };
 
       try {
@@ -44,14 +49,14 @@ export default async function handler(req, res) {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'api_key':       process.env.BASE44_API_TOKEN
+              'api_key':        process.env.BASE44_API_TOKEN
             },
             body: JSON.stringify(record)
           }
         );
+
         if (!resp.ok) {
-          const errText = await resp.text();
-          console.error('❌ Base44 returned error:', resp.status, errText);
+          console.error('❌ Base44 returned error:', resp.status, await resp.text());
         } else {
           console.log('✅ Saved ChatMessage to Base44:', record);
         }
@@ -63,6 +68,6 @@ export default async function handler(req, res) {
     return res.status(200).send('EVENT_RECEIVED');
   }
 
-  // всё остальное — Method Not Allowed
+  // всё остальное
   return res.status(405).send('Method Not Allowed');
 }
